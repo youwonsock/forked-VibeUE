@@ -1864,9 +1864,10 @@ FWidgetRemoveComponentResult UWidgetService::RemoveComponent(
 	WidgetBP->WidgetTree->RemoveWidget(WidgetToRemove);
 	Result.RemovedComponents.Add(ComponentName);
 
-	// WidgetTree::RemoveWidget does not clear generated-variable GUIDs.  Clean the
-	// root and all removed descendants while their names are still available so a
-	// subsequent Widget Blueprint compile cannot retain stale GUID references.
+	// UWidgetTree::RemoveWidget only unlinks the hierarchy. Move each removed widget
+	// out of the WidgetTree before checking source widgets, matching the editor's
+	// DeleteWidgets path. Otherwise the removed widget still finds itself by name and
+	// its generated-variable GUID survives the next Widget Blueprint compile.
 	for (UWidget* RemovedWidget : WidgetsToRemove)
 	{
 		if (!RemovedWidget)
@@ -1875,6 +1876,10 @@ FWidgetRemoveComponentResult UWidgetService::RemoveComponent(
 		}
 
 		const FName RemovedWidgetName = RemovedWidget->GetFName();
+		RemovedWidget->SetFlags(RF_Transactional);
+		RemovedWidget->Modify();
+		RemovedWidget->Rename(nullptr, GetTransientPackage());
+
 		const bool bHasWidgetWithSameName = WidgetBP->GetAllSourceWidgets().ContainsByPredicate(
 			[RemovedWidgetName](const UWidget* ExistingWidget)
 			{
@@ -1891,52 +1896,6 @@ FWidgetRemoveComponentResult UWidgetService::RemoveComponent(
 
 	Result.bSuccess = true;
 	return Result;
-}
-
-int32 UWidgetService::CleanupRemovedWidgetVariableGuids(
-	const FString& WidgetPath,
-	const TArray<FString>& RemovedComponentNames)
-{
-	UWidgetBlueprint* WidgetBP = LoadWidgetBlueprint(WidgetPath);
-	if (!WidgetBP)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("UWidgetService::CleanupRemovedWidgetVariableGuids: Widget Blueprint '%s' not found"), *WidgetPath);
-		return 0;
-	}
-
-	int32 RemovedGuidCount = 0;
-	for (const FString& ComponentName : RemovedComponentNames)
-	{
-		if (ComponentName.IsEmpty())
-		{
-			continue;
-		}
-
-		const FName RemovedWidgetName(*ComponentName);
-		const bool bHasWidgetWithSameName = WidgetBP->GetAllSourceWidgets().ContainsByPredicate(
-			[RemovedWidgetName](const UWidget* ExistingWidget)
-			{
-				return ExistingWidget && ExistingWidget->GetFName() == RemovedWidgetName;
-			});
-
-		if (!bHasWidgetWithSameName && WidgetBP->WidgetVariableNameToGuidMap.Contains(RemovedWidgetName))
-		{
-			if (RemovedGuidCount == 0)
-			{
-				WidgetBP->Modify();
-			}
-
-			WidgetBP->OnVariableRemoved(RemovedWidgetName);
-			++RemovedGuidCount;
-		}
-	}
-
-	if (RemovedGuidCount > 0)
-	{
-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBP);
-	}
-
-	return RemovedGuidCount;
 }
 
 // =================================================================

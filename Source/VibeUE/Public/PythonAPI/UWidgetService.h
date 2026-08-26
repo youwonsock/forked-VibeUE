@@ -631,21 +631,6 @@ public:
 		bool bRemoveChildren = false);
 
 	/**
-	 * Remove stale generated-variable GUID records for explicitly removed widget names.
-	 *
-	 * This is a repair path for assets modified before RemoveComponent performed this
-	 * cleanup itself. Existing source widgets with the same name are preserved.
-	 *
-	 * @param WidgetPath - Full path to the Widget Blueprint
-	 * @param RemovedComponentNames - Names of widgets known to have been removed
-	 * @return Number of stale generated-variable GUID records removed
-	 */
-	UFUNCTION(BlueprintCallable, meta = (AICallable), Category = "VibeUE|Widgets")
-	static int32 CleanupRemovedWidgetVariableGuids(
-		const FString& WidgetPath,
-		const TArray<FString>& RemovedComponentNames);
-
-	/**
 	 * Rename a widget component in the Widget Blueprint.
 	 * Maps to action="rename_widget"
 	 *

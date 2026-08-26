@@ -118,16 +118,12 @@ if (-not $enginePath) {
 }
 
 $buildBat  = Join-Path $enginePath "Engine\Build\BatchFiles\Build.bat"
-$editorExeName = if ($Mode -in @("Debug", "DebugGame")) {
-    "UnrealEditor-Win64-$Mode.exe"
+$editorExeName = if ($Mode -eq "DebugGame") {
+    "UnrealEditor-Win64-DebugGame.exe"
 } else {
     "UnrealEditor.exe"
 }
 $editorExe = Join-Path $enginePath "Engine\Binaries\Win64\$editorExeName"
-if (-not (Test-Path $editorExe)) {
-    Write-Host "ERROR: Editor executable for $Mode was not found: $editorExe" -ForegroundColor Red
-    exit 1
-}
 
 Write-Host "=== $projectName Build and Launch Script ===" -ForegroundColor Cyan
 Write-Host "Script  : $PSScriptRoot" -ForegroundColor Gray
@@ -247,6 +243,13 @@ if (-not $SkipBuild) {
     Write-Host "Build completed successfully!" -ForegroundColor Green
 } else {
     Write-Host "Skipping build..." -ForegroundColor Yellow
+}
+
+# DebugGame's editor executable is emitted by the project build. Check for it only
+# after the build step so a first-time DebugGame launch can create it before launch.
+if (-not (Test-Path $editorExe)) {
+    Write-Host "ERROR: Editor executable for $Mode was not found after the build: $editorExe" -ForegroundColor Red
+    exit 1
 }
 
 # Clear logs folder (relative to project root)
