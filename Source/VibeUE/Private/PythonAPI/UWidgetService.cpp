@@ -1825,28 +1825,38 @@ FWidgetRemoveComponentResult UWidgetService::RemoveComponent(
 		return Result;
 	}
 
-	// Collect children if needed
-	if (UPanelWidget* Panel = Cast<UPanelWidget>(WidgetToRemove))
+	TArray<UWidget*> WidgetsToRemove;
+	WidgetsToRemove.Add(WidgetToRemove);
+
+	TArray<UWidget*> ChildWidgets;
+	UWidgetTree::GetChildWidgets(WidgetToRemove, ChildWidgets);
+	if (bRemoveChildren)
+	{
+		WidgetsToRemove.Append(ChildWidgets);
+		for (UWidget* Child : ChildWidgets)
+		{
+			if (Child)
+			{
+				Result.RemovedComponents.Add(Child->GetName());
+			}
+		}
+	}
+	else if (UPanelWidget* Panel = Cast<UPanelWidget>(WidgetToRemove))
 	{
 		for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
 		{
 			if (UWidget* Child = Panel->GetChildAt(i))
 			{
-				if (bRemoveChildren)
-				{
-					Result.RemovedComponents.Add(Child->GetName());
-				}
-				else
-				{
-					Result.OrphanedChildren.Add(Child->GetName());
-				}
+				Result.OrphanedChildren.Add(Child->GetName());
 			}
 		}
 	}
 
 	// Remove from parent
+	WidgetBP->Modify();
 	if (UPanelWidget* Parent = WidgetToRemove->GetParent())
 	{
+		Parent->Modify();
 		Parent->RemoveChild(WidgetToRemove);
 	}
 
@@ -1854,12 +1864,79 @@ FWidgetRemoveComponentResult UWidgetService::RemoveComponent(
 	WidgetBP->WidgetTree->RemoveWidget(WidgetToRemove);
 	Result.RemovedComponents.Add(ComponentName);
 
-	// Mark blueprint as modified
-	WidgetBP->Modify();
+	// WidgetTree::RemoveWidget does not clear generated-variable GUIDs.  Clean the
+	// root and all removed descendants while their names are still available so a
+	// subsequent Widget Blueprint compile cannot retain stale GUID references.
+	for (UWidget* RemovedWidget : WidgetsToRemove)
+	{
+		if (!RemovedWidget)
+		{
+			continue;
+		}
+
+		const FName RemovedWidgetName = RemovedWidget->GetFName();
+		const bool bHasWidgetWithSameName = WidgetBP->GetAllSourceWidgets().ContainsByPredicate(
+			[RemovedWidgetName](const UWidget* ExistingWidget)
+			{
+				return ExistingWidget && ExistingWidget->GetFName() == RemovedWidgetName;
+			});
+
+		if (!bHasWidgetWithSameName)
+		{
+			WidgetBP->OnVariableRemoved(RemovedWidgetName);
+		}
+	}
+
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBP);
 
 	Result.bSuccess = true;
 	return Result;
+}
+
+int32 UWidgetService::CleanupRemovedWidgetVariableGuids(
+	const FString& WidgetPath,
+	const TArray<FString>& RemovedComponentNames)
+{
+	UWidgetBlueprint* WidgetBP = LoadWidgetBlueprint(WidgetPath);
+	if (!WidgetBP)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UWidgetService::CleanupRemovedWidgetVariableGuids: Widget Blueprint '%s' not found"), *WidgetPath);
+		return 0;
+	}
+
+	int32 RemovedGuidCount = 0;
+	for (const FString& ComponentName : RemovedComponentNames)
+	{
+		if (ComponentName.IsEmpty())
+		{
+			continue;
+		}
+
+		const FName RemovedWidgetName(*ComponentName);
+		const bool bHasWidgetWithSameName = WidgetBP->GetAllSourceWidgets().ContainsByPredicate(
+			[RemovedWidgetName](const UWidget* ExistingWidget)
+			{
+				return ExistingWidget && ExistingWidget->GetFName() == RemovedWidgetName;
+			});
+
+		if (!bHasWidgetWithSameName && WidgetBP->WidgetVariableNameToGuidMap.Contains(RemovedWidgetName))
+		{
+			if (RemovedGuidCount == 0)
+			{
+				WidgetBP->Modify();
+			}
+
+			WidgetBP->OnVariableRemoved(RemovedWidgetName);
+			++RemovedGuidCount;
+		}
+	}
+
+	if (RemovedGuidCount > 0)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBP);
+	}
+
+	return RemovedGuidCount;
 }
 
 // =================================================================

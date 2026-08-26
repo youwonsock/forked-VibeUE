@@ -118,7 +118,16 @@ if (-not $enginePath) {
 }
 
 $buildBat  = Join-Path $enginePath "Engine\Build\BatchFiles\Build.bat"
-$editorExe = Join-Path $enginePath "Engine\Binaries\Win64\UnrealEditor.exe"
+$editorExeName = if ($Mode -in @("Debug", "DebugGame")) {
+    "UnrealEditor-Win64-$Mode.exe"
+} else {
+    "UnrealEditor.exe"
+}
+$editorExe = Join-Path $enginePath "Engine\Binaries\Win64\$editorExeName"
+if (-not (Test-Path $editorExe)) {
+    Write-Host "ERROR: Editor executable for $Mode was not found: $editorExe" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "=== $projectName Build and Launch Script ===" -ForegroundColor Cyan
 Write-Host "Script  : $PSScriptRoot" -ForegroundColor Gray
@@ -282,6 +291,12 @@ Write-Host "Launching Unreal Editor..." -ForegroundColor Yellow
 # location) arrives as two invalid arguments and the editor silently opens the last
 # project or the Project Browser instead (issue #532).
 $editorArgs = "`"$projectPath`""
+# Debug and DebugGame module suffixes are selected only when the editor receives
+# this flag; without it a successful DebugGame build is reported as missing at
+# startup because the default Development modules are requested instead.
+if ($Mode -in @("Debug", "DebugGame")) {
+    $editorArgs += " -debug"
+}
 if ($Map) {
     $editorArgs += " `"$Map`""
     Write-Host "Opening map: $Map" -ForegroundColor Yellow
