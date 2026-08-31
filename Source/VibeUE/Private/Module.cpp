@@ -23,6 +23,10 @@
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "PythonAPI/BehaviorTreeServiceInternal.h"
+#include "PythonAPI/UWorkflowService.h"
+#if WITH_VIBEUE_EQS
+#include "PythonAPI/EnvQueryServiceInternal.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "FModule"
 
@@ -329,6 +333,7 @@ void FModule::StartupModule()
 	}
 
 	bServicesInitialized = true;
+	UWorkflowService::InitializeJournal();
 
 	// Clear screenshots directory from previous sessions to save disk space
 	FVibeUEPaths::ClearScreenshotsDir();
@@ -482,12 +487,17 @@ void FModule::UnregisterToolsets()
 
 void FModule::ShutdownModule()
 {
+	UWorkflowService::ShutdownJournal();
 	FVibeUEHealthSignal::Stop();
 	FVibeUEReadinessSignal::Remove();
 
 	// Release the BT node-class helper cache while FModuleManager / the asset registry still
 	// exist — ~FGraphNodeClassHelper unhooks their delegates, which is UB at static teardown.
 	VibeBT::ShutdownClassHelperCache();
+#if WITH_VIBEUE_EQS
+	// Same reason, same lifetime: the EQS service keeps its own FGraphNodeClassHelper cache.
+	VibeEQS::ShutdownClassHelperCache();
+#endif
 
 	if (!bServicesInitialized)
 	{
@@ -511,6 +521,7 @@ void FModule::ShutdownModule()
 void FModule::OnPreExit()
 {
 	UE_LOG(LogTemp, Display, TEXT("VibeUE OnPreExit - cleaning up Python services"));
+	UWorkflowService::ShutdownJournal();
 	FVibeUEHealthSignal::Stop();
 	FVibeUEReadinessSignal::Remove();
 	

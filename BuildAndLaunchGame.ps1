@@ -118,12 +118,31 @@ if (-not $enginePath) {
 }
 
 $buildBat  = Join-Path $enginePath "Engine\Build\BatchFiles\Build.bat"
-$editorExeName = if ($Mode -eq "DebugGame") {
-    "UnrealEditor-Win64-DebugGame.exe"
-} else {
-    "UnrealEditor.exe"
+$editorExe = Join-Path $enginePath "Engine\Binaries\Win64\UnrealEditor.exe"
+$buildManifestPath = Join-Path $projectRoot "Saved\VibeUE\last-build.json"
+
+function Write-BuildManifest([string]$Status, [Nullable[int]]$ExitCode, [string]$Diagnostic = "") {
+    $manifestDir = Split-Path $buildManifestPath -Parent
+    New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+    $payload = [ordered]@{
+        schema = "vibeue.build.v1"
+        status = $Status
+        projectFile = [IO.Path]::GetFullPath($projectPath)
+        engineRoot = [IO.Path]::GetFullPath($enginePath)
+        target = "${projectName}Editor"
+        platform = "Win64"
+        configuration = $Mode
+        command = "Build.bat ${projectName}Editor Win64 $Mode `"$projectPath`" -waitmutex"
+        completedAtIso = if ($Status -in @("succeeded", "failed", "skipped")) { [DateTime]::UtcNow.ToString("o") } else { $null }
+        exitCode = $ExitCode
+        verdict = $Status
+        logPath = Join-Path $env:LOCALAPPDATA "UnrealBuildTool\Log.txt"
+        diagnostic = $Diagnostic
+    }
+    $temp = "$buildManifestPath.tmp"
+    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temp -Encoding UTF8
+    Move-Item -LiteralPath $temp -Destination $buildManifestPath -Force
 }
-$editorExe = Join-Path $enginePath "Engine\Binaries\Win64\$editorExeName"
 
 Write-Host "=== $projectName Build and Launch Script ===" -ForegroundColor Cyan
 Write-Host "Script  : $PSScriptRoot" -ForegroundColor Gray
@@ -232,24 +251,20 @@ if ($StrictRebuild -and -not $Clean) {
 # Build the project
 if (-not $SkipBuild) {
     Write-Host "Building $projectName in $Mode mode (strict: warnings-as-errors via VibeUE.Build.cs)..." -ForegroundColor Yellow
+    Write-BuildManifest "running" $null
     
     & $buildBat "${projectName}Editor" Win64 $Mode $projectPath -waitmutex
     
     if ($LASTEXITCODE -ne 0) {
+        Write-BuildManifest "failed" $LASTEXITCODE "UnrealBuildTool returned a non-zero exit code."
         Write-Host "Build failed! Exit code: $LASTEXITCODE" -ForegroundColor Red
         exit 1
     }
-    
+    Write-BuildManifest "succeeded" 0
     Write-Host "Build completed successfully!" -ForegroundColor Green
 } else {
+    Write-BuildManifest "skipped" $null "Build was skipped by caller; this is not compile verification."
     Write-Host "Skipping build..." -ForegroundColor Yellow
-}
-
-# DebugGame's editor executable is emitted by the project build. Check for it only
-# after the build step so a first-time DebugGame launch can create it before launch.
-if (-not (Test-Path $editorExe)) {
-    Write-Host "ERROR: Editor executable for $Mode was not found after the build: $editorExe" -ForegroundColor Red
-    exit 1
 }
 
 # Clear logs folder (relative to project root)
@@ -294,12 +309,6 @@ Write-Host "Launching Unreal Editor..." -ForegroundColor Yellow
 # location) arrives as two invalid arguments and the editor silently opens the last
 # project or the Project Browser instead (issue #532).
 $editorArgs = "`"$projectPath`""
-# Debug and DebugGame module suffixes are selected only when the editor receives
-# this flag; without it a successful DebugGame build is reported as missing at
-# startup because the default Development modules are requested instead.
-if ($Mode -in @("Debug", "DebugGame")) {
-    $editorArgs += " -debug"
-}
 if ($Map) {
     $editorArgs += " `"$Map`""
     Write-Host "Opening map: $Map" -ForegroundColor Yellow
