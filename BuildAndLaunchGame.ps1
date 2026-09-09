@@ -19,6 +19,8 @@ param(
     # themselves. Exit codes: 0 ready, 2 timed out, 3 editor exited before ready.
     [switch]$WaitForReady,
     [int]$ReadyTimeoutSec = 120,
+    # Start the engine's loopback MCP endpoint for editor verification.
+    [switch]$StartMCPServer,
     # Map to open on launch (e.g. /Game/Maps/TrainingPool). Without this the editor opens the
     # project's default map, which after a mid-task relaunch is usually the WRONG level — world
     # edits then land on the default map (issue #554). The loaded map is also published in the
@@ -118,7 +120,12 @@ if (-not $enginePath) {
 }
 
 $buildBat  = Join-Path $enginePath "Engine\Build\BatchFiles\Build.bat"
-$editorExe = Join-Path $enginePath "Engine\Binaries\Win64\UnrealEditor.exe"
+$editorExecutableName = if ($Mode -eq "DebugGame") {
+    "UnrealEditor-Win64-DebugGame.exe"
+} else {
+    "UnrealEditor.exe"
+}
+$editorExe = Join-Path $enginePath "Engine\Binaries\Win64\$editorExecutableName"
 $buildManifestPath = Join-Path $projectRoot "Saved\VibeUE\last-build.json"
 
 function Write-BuildManifest([string]$Status, [Nullable[int]]$ExitCode, [string]$Diagnostic = "") {
@@ -309,6 +316,9 @@ Write-Host "Launching Unreal Editor..." -ForegroundColor Yellow
 # location) arrives as two invalid arguments and the editor silently opens the last
 # project or the Project Browser instead (issue #532).
 $editorArgs = "`"$projectPath`""
+if ($StartMCPServer) {
+    $editorArgs += " -ModelContextProtocolStartServer"
+}
 if ($Map) {
     $editorArgs += " `"$Map`""
     Write-Host "Opening map: $Map" -ForegroundColor Yellow
