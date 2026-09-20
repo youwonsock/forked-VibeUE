@@ -36,14 +36,19 @@ public:
 	 * Execute Python code in the Unreal Engine Python environment
 	 *
 	 * @param Code - Python code to execute
+	 * @param bAutoSave - When true (default) every dirty content and world package is saved headlessly
+	 *                    before the script runs; pass false to run the script without that sweep.
+	 *                    The result JSON always reports the OUTCOME: auto_save (true only when the
+	 *                    sweep really ran), auto_save_note and the saved_packages list.
 	 * @return Execution result including output, errors, and success status
 	 */
 	UFUNCTION(BlueprintCallable, Category="VibeUE|Python", meta=(
 		ToolName="execute_python_code",
 		ToolDescription="Execute Python code in Unreal Engine. Returns stdout, stderr, and execution status.",
-		ParamDescription_Code="Python code to execute"
+		ParamDescription_Code="Python code to execute",
+		ParamDescription_bAutoSave="Save all dirty content and world packages before running (default true). Pass false to skip the pre-run save sweep."
 	))
-	static FString ExecutePythonCode(const FString& Code);
+	static FString ExecutePythonCode(const FString& Code, bool bAutoSave = true);
 
 	/**
 	 * Discover a Python module and list its contents
@@ -109,6 +114,20 @@ public:
 	 * Must be called before Python shuts down to avoid access violations.
 	 */
 	static void Shutdown();
+
+	/**
+	 * Map worlds currently resident besides the open level, as full object paths.
+	 *
+	 * A map opened as an ASSET (unreal.load_asset("/Game/Maps/Foo"), EditorAssetLibrary.load_asset,
+	 * find_object, ...) stays loaded afterwards. The engine checks on every level load that no other
+	 * map package is still alive, and that check is FATAL, not a warning - so the crash lands on
+	 * whoever loads a level next, naming neither the script nor the tool that left it behind.
+	 * execute_python_code reports this after every run so the warning arrives with its cause.
+	 *
+	 * Excludes the open editor world, PIE worlds, and the transient preview worlds the editor keeps
+	 * alive for Blueprint/material/thumbnail previews. Empty when GEditor is unavailable.
+	 */
+	static TArray<FString> GetResidentMapWorlds();
 
 private:
 	static TSharedPtr<VibeUE::FPythonExecutionService> GetExecutionService();

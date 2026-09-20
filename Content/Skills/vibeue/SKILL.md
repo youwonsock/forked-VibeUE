@@ -49,16 +49,22 @@ health file instead: file missing or `updatedUtc` older than ~15s â†’ the p
 hang â€” relaunch); fresh and small â†’ the editor is healthy, debug something else.
 
 Both the readiness and health JSON also carry `mcpPort` and `mcpListening` (issue B6). **Check
-`mcpListening` before assuming a live link.** If it is `false`, this editor's MCP module reports no
-running HTTP server, so every MCP call to it will fail to connect. The usual cause is the port-8000
-fight: a headless `UnrealEditor-Cmd` and the GUI editor started together, one lost the bind, and the
-loser looks healthy while owning no MCP. Restart the loser (never run a headless editor while the GUI
-editor is starting). If `mcpListening` is `true` but calls still will not connect, grep the editor log
-for `VibeUE: MCP is expected to listen ... found the port FREE` and Epic's `LogHttpListener ... unable
-to bind to 127.0.0.1:<port>` — that Error line is the fight leaving a loud trail. Note that a
-bind-probe issued from inside the process cannot tell whether this editor or another holds the port,
-so `mcpListening=true` means only that this process's module started a server, not that it won the
-port.
+`mcpListening` before assuming a live link.** The very first readiness signal is written the instant
+`RegisterToolsets()` ends, which is ~10 ms before Epic's MCP module finishes binding its HTTP listener,
+so `mcpListening` is normally `false` for a fraction of a second at startup and then flips to `true`.
+VibeUE republishes the readiness signal the moment the listener reports running, so a brief
+`false`-then-`true` is expected and healthy — poll the file (or the health heartbeat) rather than
+trusting the first read. If `mcpListening` stays `false` for more than the startup grace window
+(~15 s), this editor's MCP module has no running HTTP server and every MCP call to it will fail to
+connect; VibeUE logs one `LogVibeUEMcp: Error` line at that point saying whether the port is FREE
+(this editor's server failed to start / never started) or held by ANOTHER process (it lost the
+port fight). The usual cause of the latter is the port-8000 fight: a headless `UnrealEditor-Cmd` and
+the GUI editor started together, one lost the bind, and the loser looks healthy while owning no MCP.
+Restart the loser (never run a headless editor while the GUI editor is starting; also grep for Epic's
+`LogHttpListener ... unable to bind to 127.0.0.1:<port>`). Note that a bind-probe issued from inside
+the process cannot tell whether this editor or another holds the port, so `mcpListening=true` means
+only that this process's module started a server, not that it won the port — and VibeUE never forces
+`mcpListening` true from a probe result, it only ever reflects the module's own claim.
 
 ## Persisted Python results -- a timed-out call is not a failed call
 
@@ -67,6 +73,14 @@ The MCP client aborts an `execute_python_code` call after its own timeout (~30s 
 re-running** -- re-running double-executes a mutation. Every run's outcome is written to
 `Signals/python-<pid>-last.json` (always the latest) and appended to `Signals/python-<pid>-runs.jsonl`
 (last ~200 runs / ~2 MB):
+
+A run that COMPLETES but overruns the server-side timeout is no longer reported as an error: the
+reply comes back `success:true` with `timed_out:true`, its `run_id`, and `signal_file_path` (the
+`python-<pid>-last.json` path), so a client whose own budget is longer -- or a retry -- gets the real
+output instead of a bare `PYTHON_EXECUTION_TIMEOUT`. Only a call the client actually abandoned (it
+gave up while the script was still running) returns nothing to you; that is the case
+`last_python_result()` below is for. Error replies now also append `run_id=<N>` and the signal path
+to the message for the same recovery.
 
 ```json
 {"runId":7,"pid":21044,"success":true,"label":"#7 execute_python_code","output":"...",
@@ -170,6 +184,58 @@ unreal.StateTreeService.create_state_tree("/Game/AI/MyBehavior")
 You get the full `unreal.*` API plus every `unreal.<Service>` VibeUE adds. Reserve `call_tool` for
 **engine toolsets and skills** (e.g. `AgentSkillToolset`, `EditorToolset.EditorAppToolset`,
 `LogsToolset`, `GameplayTagsToolset`, `AssetTools`).
+
+**`auto_save` (default true).** Before running your script, `execute_python_code` saves every dirty
+content AND world package headlessly (issue #433: this avoids the modal save dialog that would hang
+the call). Every reply reports what actually happened: `auto_save` (true only when the sweep really
+ran), `auto_save_note` (empty when it ran, otherwise `opted_out`, `previous_run_crashed`,
+`editor_unavailable`, `pie_active`, or `save_failed`) and `saved_packages` (the package names it
+wrote). `auto_save` is the OUTCOME, not an echo of your argument -- so `auto_save: true,
+saved_packages: []` means "swept, nothing was dirty", never "skipped". Pass `auto_save=false` to run
+the script WITHOUT that sweep -- use it when you do not want in-flight editor edits flushed to disk,
+or to keep a mutation you are about to make from being interleaved with an unrelated dirty package.
+The sweep is skipped anyway after a crashed run, when GEditor is missing, or in PIE.
+
+## Never leave a map loaded - it crashes the editor on the next level change
+
+Opening a map as an **asset** keeps it resident:
+
+```python
+w = unreal.load_asset("/Game/Maps/Foo")          # loads and KEEPS Foo
+unreal.EditorAssetLibrary.load_asset("/Game/Maps/Foo")
+unreal.find_object(None, "/Game/Maps/Foo.Foo")
+```
+
+The engine checks on every level load that no other map package is still alive. That check is a
+**fatal, not a warning** - the editor dies with `World Memory Leaks` (`EditorServer.cpp`) and
+`Old level package /Game/Maps/Foo not cleaned up by garbage collection`. The crash lands on whoever
+calls `load_level` next, which may be minutes later and a different tool entirely, and the message
+names neither the script nor the map that caused it.
+
+`execute_python_code` reports this in every reply so the warning arrives with its cause:
+
+```json
+"resident_maps": ["/Game/Maps/Foo.Foo"]
+```
+
+**Non-empty `resident_maps` means the next level load will crash the editor.**
+
+There is no reliable in-process cure. A map package loads with `RF_Standalone`, and **neither
+`unreal.SystemLibrary.collect_garbage()` nor `EditorLoadingAndSavingUtils.unload_packages()`
+releases it** - both were tried against a live editor and the world stayed resident. Once a map is
+stranded, **restart the editor** (`BuildAndLaunchGame.ps1`) before changing levels.
+
+So treat this as prevention, not repair:
+
+- To read a map's **metadata**, use the asset registry - it loads nothing:
+  ```python
+  ar = unreal.AssetRegistryHelpers.get_asset_registry()
+  maps = ar.get_assets_by_path("/Game/Maps", recursive=True)
+  ```
+- To **change level**, use `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).load_level(path)`,
+  which swaps the open world properly. Never `load_asset` a map to "look at it".
+
+The open level is never reported - only stragglers.
 
 ## Tools â€” what each is for
 

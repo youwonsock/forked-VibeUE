@@ -464,6 +464,30 @@ assert node_id, actor_get_location.spawner_key
 
 If a node-create call returns an empty ID, stop immediately. Re-read the graph, inspect the error output, and fix the lookup before creating anything else.
 
+#### Variable get/set keys: own variables, and the qualified form
+
+`SPAWN K2Node_VariableGet|<MenuName>` (and `...VariableSet`) binds a variable the Blueprint **owns** —
+one of its own variables, an inherited one, or an SCS component. A variable you just added with
+`add_member_variable()` works immediately; the action database has no spawner for it yet, so the
+service binds it as a self member directly. Menu names use the variable's *display* spelling, and a
+bool drops its `b` prefix: `bIsOpen` is `"Get Is Open"` (the raw `"Get bIsOpen"` is accepted too).
+
+A variable owned by an **unrelated** class is refused, because binding one silently produces a node
+that fails to compile with "uses an invalid target". When you deliberately want another class's
+property wired through the node's Target pin, qualify the key with its owning class:
+
+```python
+# Refused — ACharacter is not in this Actor Blueprint's hierarchy:
+unreal.BlueprintService.create_node_by_key(bp, "EventGraph", "SPAWN K2Node_VariableGet|Get Jump Max Count", 0, 0)   # -> ""
+
+# Deliberate cross-class read, wired through the Target pin:
+unreal.BlueprintService.create_node_by_key(
+    bp, "EventGraph", "SPAWN K2Node_VariableGet|Get Jump Max Count|Character", 0, 0)                                # -> node id
+```
+
+Format: `SPAWN <NodeClass>|<MenuName>|<OwnerClass>`. If the named class is one the Blueprint already
+derives from, the node is bound as a self member instead (no redundant Target pin).
+
 ### ⚠️ Standard Macro nodes (ForEachLoop, etc.) — do NOT use `create_node_by_key`
 
 Macro instances (`K2Node_MacroInstance`) have **no spawner key**, so `discover_nodes()` won't find them and `create_node_by_key()` **fails silently** (returns empty, no error). Use the dedicated method instead:
@@ -709,7 +733,7 @@ After any graph edit, verify all three layers:
 
 1. **Connections**: call `get_connections()` and confirm the exact expected wiring.
 2. **Pins**: if a connection fails, call `get_node_pins()` and use the real pin names.
-3. **Compile**: inspect the engine `BlueprintTools.compile_blueprint` result's `success`, `num_errors`, and `errors`.
+3. **Compile**: inspect the compile result's `success`, `num_errors`, and `errors`. Either the engine `BlueprintTools.compile_blueprint`, or `unreal.BlueprintService.compile_blueprint(bp_path)` — the latter returns an `FBlueprintCompileResult` (`success`, `num_errors`, `num_warnings`, `errors`, `warnings`) directly from the service, so you can compile and read the error text without leaving `BlueprintService`.
 
 For any node you claim you created, also re-read the graph with `get_nodes_in_graph()` and confirm that node actually exists in the graph after the edit. A returned node ID from a create call is not enough.
 
@@ -721,11 +745,15 @@ For `Custom Event` timer callbacks, verify both of these before wiring:
 Also verify that the node type is the expected custom event form rather than `K2Node_CreateDelegate`.
 
 ```python
-# compile goes through the engine BlueprintTools toolset
+# compile via the engine BlueprintTools toolset ...
 result = call_tool(tool_name="compile_blueprint",
                    toolset_name="editor_toolset.toolsets.blueprint.BlueprintTools",
                    arguments={"blueprint": bp_path})
 assert result["success"], result.get("errors")
+
+# ... or straight from BlueprintService, which returns the compiler's error text:
+res = unreal.BlueprintService.compile_blueprint(bp_path)
+assert res.success, (res.num_errors, res.errors)
 
 nodes = unreal.BlueprintService.get_nodes_in_graph(bp_path, graph)
 for node in nodes:

@@ -167,14 +167,16 @@ static FString MakeErrorJson(const FString& ErrorCode, const FString& ErrorMessa
 
 // Register execute_python_code tool
 REGISTER_VIBEUE_TOOL(execute_python_code,
-	"Execute Python code in Unreal Engine. IMPORTANT: Use 'import unreal' (lowercase). For subsystems use: unreal.get_editor_subsystem(unreal.LevelEditorSubsystem). Returns stdout, stderr, and execution status.",
+	"Execute Python code in Unreal Engine. IMPORTANT: Use 'import unreal' (lowercase). For subsystems use: unreal.get_editor_subsystem(unreal.LevelEditorSubsystem). Returns stdout, stderr, and execution status. A non-empty resident_maps in the reply means a map other than the open level is loaded in memory and the NEXT level load will crash the editor until it is released.",
 	"Python",
 	TOOL_PARAMS(
-		TOOL_PARAM("code", "Python code to execute. Must start with 'import unreal' (lowercase). For editor subsystems use unreal.get_editor_subsystem()", "string", true)
+		TOOL_PARAM("code", "Python code to execute. Must start with 'import unreal' (lowercase). For editor subsystems use unreal.get_editor_subsystem()", "string", true),
+		TOOL_PARAM("auto_save", "Save all dirty content AND world packages before running (default true). Pass false to run without the pre-execution save sweep. The reply reports the OUTCOME: auto_save (true only if the sweep really ran), auto_save_note (why not, when false) and saved_packages.", "boolean", false)
 	),
 	{
 		FString Code = ExtractParamFromJson(Params, TEXT("code"));
-		return UPythonTools::ExecutePythonCode(Code);
+		bool bAutoSave = ExtractBoolParam(Params, TEXT("auto_save"), true);
+		return UPythonTools::ExecutePythonCode(Code, bAutoSave);
 	}
 );
 
